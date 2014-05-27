@@ -17,6 +17,7 @@ lovebird.host = "*"
 lovebird.buffer = ""
 lovebird.lines = {}
 lovebird.pages = {}
+lovebird.stats = {}
 
 lovebird.wrapprint = true
 lovebird.timestamp = true
@@ -25,6 +26,7 @@ lovebird.port = 8000
 lovebird.whitelist = { "127.0.0.1", "192.168.*.*" }
 lovebird.maxlines = 200
 lovebird.updateinterval = .5
+lovebird.collectstats = true
 
 
 lovebird.pages["index"] = [[
@@ -43,7 +45,7 @@ end
   <meta http-equiv="x-ua-compatible" content="IE=Edge"/>
   <title>lovebird</title>
   <style>
-    body { 
+    body {
       margin: 0px;
       font-size: 14px;
       font-family: helvetica, verdana, sans;
@@ -162,7 +164,7 @@ end
       <div id="console" class="greybordered">
         <div id="output"> <?lua echo(lovebird.buffer) ?> </div>
         <div id="input">
-          <form method="post" 
+          <form method="post"
                 onkeydown="return onInputKeyDown(event);"
                 onsubmit="onInputSubmit(); return false;">
             <input id="inputbox" name="input" type="text"></input>
@@ -247,7 +249,7 @@ end
         geturl("/buffer", function(text) {
           updateDivContent("status", "connected &#9679;");
           if (updateDivContent("output", text)) {
-            var div = document.getElementById("output"); 
+            var div = document.getElementById("output");
             div.scrollTop = div.scrollHeight;
           }
         },
@@ -260,16 +262,43 @@ end
 
       /* Environment variable view */
       var envPath = "";
+      var selectedView = "env";
+
+      var switchVarView = function(view) {
+        selectedView = view;
+      }
+
       var refreshEnv = function() {
-        geturl("/env.json?p=" + envPath, function(text) { 
+        var path
+        if (selectedView == "env") {
+          path = "/env.json?p=" + envPath;
+        }
+        else if (selectedView == "stats") {
+          path = "/stats.json";
+        }
+
+
+        geturl(path, function(text) {
           var json = eval("(" + text + ")");
 
           /* Header */
-          var html = "<a href='#' onclick=\"setEnvPath('')\">env</a>";
+          var html = "<a href='#' onclick=\"switchVarView('stats'); \">stats</a> | <a href='#' onclick=\"setEnvPath('');\">env</a>";
           var acc = "";
-          var p = json.path != "" ? json.path.split(".") : [];
+          var p;
+          if (selectedView == "env") {
+            p = json.path;
+          }
+          else if (selectedView == "stats") {
+            p = envPath;
+          }
+          var p = p != "" ? p.split(".") : [];
           for (var i = 0; i < p.length; i++) {
-            acc += "." + p[i];
+            if (selectedView == "env") {
+              acc += "." + p[i];
+            }
+            else {
+              acc += p[i];
+            }
             html += " <a href='#' onclick=\"setEnvPath('" + acc + "')\">" +
                     truncate(p[i], 10) + "</a>";
           }
@@ -283,24 +312,34 @@ end
 
           /* Variables */
           var html = "<table>";
-          for (var i = 0; json.vars[i]; i++) {
-            var x = json.vars[i];
-            var fullpath = (json.path + "." + x.key).replace(/^\./, "");
-            var k = truncate(x.key, 15);
-            if (x.type == "table") {
-              k = "<a href='#' onclick=\"setEnvPath('" + fullpath + "')\">" +
-                  k + "</a>";
+          if (selectedView == "env") {
+            for (var i = 0; json.vars[i]; i++) {
+              var x = json.vars[i];
+              var fullpath = (json.path + "." + x.key).replace(/^\./, "");
+              var k = truncate(x.key, 15);
+              if (x.type == "table") {
+                k = "<a href='#' onclick=\"setEnvPath('" + fullpath + "')\">" +
+                    k + "</a>";
+              }
+              var v = "<a href='#' onclick=\"insertVar('" +
+                      fullpath.replace(/\.(-?[0-9]+)/g, "[$1]") +
+                      "');\">" + x.value + "</a>"
+              html += "<tr><td>" + k + "</td><td>" + v + "</td></tr>";
             }
-            var v = "<a href='#' onclick=\"insertVar('" +
-                    fullpath.replace(/\.(-?[0-9]+)/g, "[$1]") +
-                    "');\">" + x.value + "</a>"
-            html += "<tr><td>" + k + "</td><td>" + v + "</td></tr>";
+          }
+          else if (selectedView == "stats") {
+            for (var i = 0; json.vars[i]; i++) {
+              var x = json.vars[i];
+              var k = truncate(x.key, 15);
+              html += "<tr><td>" + k + "</td><td>" + x.value + "</td></tr>";
+            }
           }
           html += "</table>";
           updateDivContent("envvars", html);
         });
       }
-      var setEnvPath = function(p) { 
+      var setEnvPath = function(p) {
+        switchVarView('env');
         envPath = p;
         refreshEnv();
       }
@@ -320,7 +359,7 @@ lovebird.pages["buffer"] = [[ <?lua echo(lovebird.buffer) ?> ]]
 
 
 lovebird.pages["env.json"] = [[
-<?lua 
+<?lua
   local t = _G
   local p = req.parsedurl.query.p or ""
   p = p:gsub("%.+", "%."):match("^[%.]*(.*)[%.]*$")
@@ -339,25 +378,49 @@ lovebird.pages["env.json"] = [[
   "valid": true,
   "path": "<?lua echo(p) ?>",
   "vars": [
-    <?lua 
+    <?lua
       local keys = {}
-      for k in pairs(t) do 
+      for k in pairs(t) do
         if type(k) == "number" or type(k) == "string" then
           table.insert(keys, k)
         end
       end
       table.sort(keys, lovebird.compare)
-      for _, k in pairs(keys) do 
+      for _, k in pairs(keys) do
         local v = t[k]
     ?>
-      { 
+      {
         "key": "<?lua echo(k) ?>",
-        "value": <?lua echo( 
+        "value": <?lua echo(
                           string.format("%q",
                             lovebird.truncate(
                               lovebird.htmlescape(
                                 tostring(v)), 26))) ?>,
         "type": "<?lua echo(type(v)) ?>",
+      },
+    <?lua end ?>
+  ]
+}
+]]
+
+lovebird.pages["stats.json"] = [[
+{
+  "valid": true,
+  "vars": [
+    <?lua
+      local keys = {}
+      for k in pairs(lovebird.stats) do
+        if type(k) == "number" or type(k) == "string" then
+          table.insert(keys, k)
+        end
+      end
+      table.sort(keys, lovebird.compare)
+      for _,k in pairs(keys) do
+        local v = lovebird.stats[k]
+    ?>
+      {
+        "key": "<?lua echo(k) ?>",
+        "value": <?lua echo(tostring(v)) ?>,
       },
     <?lua end ?>
   ]
@@ -379,9 +442,21 @@ function lovebird.init()
       lovebird.print(...)
     end
   end
+  -- Wrap other calls
+  if lovebird.collectstats then
+    local copies = {}
+    for k,v in pairs(love.graphics) do
+      local oldfun = v
+      lovebird.stats[k] = 0
+      love.graphics[k] = function(...)
+        lovebird.stats[k] = lovebird.stats[k]+1
+        return v(...)
+      end
+    end
+  end
   -- Compile page templates
   for k, page in pairs(lovebird.pages) do
-    lovebird.pages[k] = lovebird.template(page, "lovebird, req", 
+    lovebird.pages[k] = lovebird.template(page, "lovebird, req",
                                           "pages." .. k)
   end
   lovebird.inited = true
@@ -504,7 +579,7 @@ function lovebird.print(...)
       str = '<span class="repeatcount">' .. line.count .. '</span> ' .. str
     end
     if lovebird.timestamp then
-      str = os.date('<span class="timestamp">%H:%M:%S</span> ', line.time) .. 
+      str = os.date('<span class="timestamp">%H:%M:%S</span> ', line.time) ..
             str
     end
     return str
@@ -522,7 +597,7 @@ function lovebird.onrequest(req, client)
   local page = req.parsedurl.path
   page = page ~= "" and page or "index"
   -- Handle "page not found"
-  if not lovebird.pages[page] then 
+  if not lovebird.pages[page] then
     return "HTTP/1.1 404\r\nContent-Type: text/html\r\n\r\nBad page"
   end
   -- Handle page
@@ -574,18 +649,21 @@ end
 
 
 function lovebird.update()
-  if not lovebird.inited then lovebird.init() end 
+  if not lovebird.inited then lovebird.init() end
   while 1 do
     local client = lovebird.server:accept()
     if not client then break end
     client:settimeout(2)
     local addr = client:getsockname()
-    if lovebird.checkwhitelist(addr) then 
+    if lovebird.checkwhitelist(addr) then
       xpcall(function() lovebird.onconnect(client) end, function() end)
     else
       lovebird.trace("got non-whitelisted connection attempt: ", addr)
       client:close()
     end
+  end
+  for k,_ in pairs(lovebird.stats) do
+    lovebird.stats[k] = 0
   end
 end
 
